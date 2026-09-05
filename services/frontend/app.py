@@ -9,7 +9,7 @@ PAYMENT_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://payment-service:5000
 def index():
     try:
         account_resp = requests.get(f"{ACCOUNT_URL}/", timeout=2).json()
-        payment_resp = requests.get(f"{PAYMENT_URL}/pay", timeout=2).json()
+        payment_resp = requests.post(f"{PAYMENT_URL}/pay", timeout=2).json()
         return jsonify({"account": account_resp, "payment": payment_resp})
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 502
