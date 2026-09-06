@@ -2,6 +2,9 @@ name: Generate Changelog
 on:
   push:
     tags: ['v*']
+permissions:
+  contents: write
+  pull-requests: write
 jobs:
   changelog:
     runs-on: ubuntu-latest
@@ -17,10 +20,10 @@ jobs:
           else
             git log --oneline >> CHANGELOG.md
           fi
-      - name: Commit changelog
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add CHANGELOG.md
-          git commit -m "Update changelog for ${GITHUB_REF_NAME}" || echo "No changes"
-          git push origin HEAD:main
+      - name: Open a PR with the changelog
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Update changelog for ${{ github.ref_name }}"
+          branch: "changelog/${{ github.ref_name }}"
+          title: "Changelog for ${{ github.ref_name }}"
+          body: "Auto-generated changelog for release ${{ github.ref_name }}."
