@@ -1,0 +1,26 @@
+name: Generate Changelog
+on:
+  push:
+    tags: ['v*']
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Build changelog since last tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          echo "## ${GITHUB_REF_NAME}" > CHANGELOG.md
+          if [ -n "$PREV_TAG" ]; then
+            git log ${PREV_TAG}..HEAD --oneline >> CHANGELOG.md
+          else
+            git log --oneline >> CHANGELOG.md
+          fi
+      - name: Commit changelog
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add CHANGELOG.md
+          git commit -m "Update changelog for ${GITHUB_REF_NAME}" || echo "No changes"
+          git push origin HEAD:main

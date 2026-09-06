@@ -1,0 +1,8 @@
+#!/bin/sh
+echo "Running gitleaks secret scan before push..."
+
+gitleaks protect --staged --verbose
+if [ $? -ne 0 ]; then
+  echo "Gitleaks found a potential secret. Push aborted."
+  exit 1
+fi
