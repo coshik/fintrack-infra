@@ -1,9 +1,11 @@
-import os, requests
+import os
+import requests
 from flask import Flask, jsonify
 
 app = Flask(__name__)
 ACCOUNT_URL = os.environ.get("ACCOUNT_SERVICE_URL", "http://account-service:5000")
 PAYMENT_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://payment-service:5000")
+
 
 @app.route("/")
 def index():
@@ -14,9 +16,11 @@ def index():
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 502
 
+
 @app.route("/healthz")
 def healthz():
     return jsonify({"status": "healthy"}), 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
