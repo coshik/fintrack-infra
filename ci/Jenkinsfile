@@ -1,0 +1,21 @@
+pipeline {
+  agent { label 'docker-agent' }
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+    stage('Build') {
+      steps { sh 'echo "Building account-service:v2..."' }
+    }
+    stage('Deploy Canary') {
+      steps { sh 'echo "Deploying account-service:v2 canary..."' }
+    }
+    stage('Health Check') {
+      steps { sh 'echo "Simulating failed health check..."; exit 1' }
+    }
+  }
+  post {
+    failure {
+      // BUG: hardcoded tag, not the actual last-good tag
+      sh 'echo "Rolling back to v1.0.0..."; echo "ERROR: tag v1.0.0 not found"'
+    }
+  }
+}
