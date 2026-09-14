@@ -22,11 +22,11 @@ Infrastructure runs on two AWS EC2 instances (Ubuntu 22.04, `t3.medium`) forming
 
 **Phase 1 (Git Hygiene \& Release Management) is complete.** A messy, secret-leaking, direct-to-main history was diagnosed with `git bisect`/`git diff`/`git reflog` and repaired with `git revert` and an interactive rebase, then `main` was locked down with branch protection, a pre-push secret scanner, and CI-gated PRs with automated release changelogs.
 
-!\[Final clean git history after Phase 1](./screenshots/phase1-clean-final-log.png)
+![Final clean git history after Phase 1](./screenshots/phase1-clean-final-log.png)
 
 **Phase 2 (Jenkins CI/CD Diagnosis and Pipeline Recovery) is complete.** Along the way, a real (not simulated) EC2 disk-full incident hit during Jenkins setup — diagnosed and fixed by resizing the EBS volume. The Jenkins agent's disconnect after an EC2 restart was diagnosed and fixed with a proper restart policy, the pipeline's hardcoded rollback tag was replaced with a dynamic last-good-tag lookup, timeout/failure notifications were added, and Jenkins access was locked down with matrix-based authorization and a rotatable Docker Hub credential.
 
-!\[Jenkins agent connected](./screenshots/phase2-agent-connected.png)
+![Jenkins agent connected](./screenshots/phase2-agent-connected.png)
 
 Full evidence and reasoning for both phases: [REPORT.md](./REPORT.md).
 
