@@ -31,5 +31,5 @@ spec:
   - metadata: { name: mongo-data }
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: "fast-ssd-doesnotexist"
+      storageClassName: "local-path"
       resources: { requests: { storage: 1Gi } }
