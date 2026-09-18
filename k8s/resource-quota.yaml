@@ -7,5 +7,5 @@ spec:
   hard:
     requests.cpu: "2"
     requests.memory: 2Gi
-    limits.cpu: "4"
-    limits.memory: 4Gi
+    limits.cpu: "16"
+    limits.memory: 8Gi
