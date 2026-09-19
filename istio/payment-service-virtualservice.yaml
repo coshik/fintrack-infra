@@ -1,0 +1,12 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-service
+  namespace: fintrack
+spec:
+  hosts: [payment-service]
+  http:
+  - route:
+    - destination: { host: payment-service }
+    retries: { attempts: 2, perTryTimeout: 1s }
+    timeout: 3s

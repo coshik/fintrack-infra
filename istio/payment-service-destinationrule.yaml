@@ -1,0 +1,12 @@
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-service
+  namespace: fintrack
+spec:
+  host: payment-service
+  trafficPolicy:
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 1m
+      baseEjectionTime: 1m
