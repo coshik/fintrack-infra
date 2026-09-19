@@ -1,0 +1,12 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: frontend
+  namespace: fintrack
+spec:
+  hosts: [frontend]
+  http:
+  - route:
+    - destination: { host: frontend }
+    retries: { attempts: 2, perTryTimeout: 1s }
+    timeout: 3s

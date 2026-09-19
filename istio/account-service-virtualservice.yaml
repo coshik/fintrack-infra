@@ -1,0 +1,15 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: account-service
+  namespace: fintrack
+spec:
+  hosts: [account-service]
+  http:
+  - route:
+    - destination: { host: account-service, subset: v1 }
+      weight: 90
+    - destination: { host: account-service, subset: v2 }
+      weight: 10
+    retries: { attempts: 2, perTryTimeout: 1s }
+    timeout: 3s
