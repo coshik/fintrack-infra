@@ -55,4 +55,4 @@ metadata:
   namespace: fintrack
 spec:
   selector: { app: account-service }
-  ports: [{ port: 5000 }]
+  ports: [{ name: http, port: 5000 }]
