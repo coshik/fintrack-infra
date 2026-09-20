@@ -22,4 +22,4 @@ metadata:
 spec:
   type: NodePort
   selector: { app: frontend }
-  ports: [{ port: 5000, nodePort: 30080 }]
+  ports: [{ name: http, port: 5000, nodePort: 30080 }]
