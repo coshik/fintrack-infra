@@ -1,17 +1,27 @@
 import os
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 ACCOUNT_URL = os.environ.get("ACCOUNT_SERVICE_URL", "http://account-service:5000")
 PAYMENT_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://payment-service:5000")
 
+TRACE_HEADERS = [
+    "x-request-id", "x-b3-traceid", "x-b3-spanid", "x-b3-parentspanid",
+    "x-b3-sampled", "x-b3-flags", "x-ot-span-context",
+]
+
+
+def forwarded_headers():
+    return {h: request.headers[h] for h in TRACE_HEADERS if h in request.headers}
+
 
 @app.route("/")
 def index():
+    headers = forwarded_headers()
     try:
-        account_resp = requests.get(f"{ACCOUNT_URL}/", timeout=2).json()
-        payment_resp = requests.post(f"{PAYMENT_URL}/pay", timeout=2).json()
+        account_resp = requests.get(f"{ACCOUNT_URL}/", headers=headers, timeout=2).json()
+        payment_resp = requests.post(f"{PAYMENT_URL}/pay", headers=headers, timeout=2).json()
         return jsonify({"account": account_resp, "payment": payment_resp})
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 502
