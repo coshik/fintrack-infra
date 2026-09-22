@@ -12,6 +12,7 @@ spec:
       containers:
       - name: frontend
         image: coshik/frontend:v1
+        imagePullPolicy: Always
         ports: [{ containerPort: 5000 }]
         resources:
           requests: { memory: "64Mi", cpu: "50m" }
