@@ -31,9 +31,13 @@ Infrastructure runs on two AWS EC2 instances (Ubuntu, `t3.medium`) forming a `ku
 
 ![PVC bound after fix](./screenshots/phase3-pvc-bound.png)
 
-Full evidence and reasoning for all three phases: [REPORT.md](./REPORT.md).
+**Phase 4 (Istio Traffic Control, Security, and Observability) is complete.** mTLS is enforced STRICT across the namespace (verified — and confirmed it also correctly blocks non-mesh clients, which changed how later tests had to be run). The 90/10 canary split was verified with a real distribution test (47 v1 / 3 v2 over 50 requests). The `payment-service` circuit breaker was verified end-to-end — 5 real failures, then automatic ejection, then automatic recovery — after discovering Envoy won't eject a service's only replica without explicitly raising `maxEjectionPercent`. Distributed tracing took the most debugging of any single task in this project: five distinct, real root causes (missing Telemetry config, unpropagated trace headers, a stale cached Docker image, and two different traffic-generation methods that each silently bypassed the mesh) before a genuine end-to-end trace was captured — which then revealed the actual latency bottleneck sits in `frontend`'s own sequential (rather than concurrent) calls to its two downstream services, not in either downstream service itself.
 
-Phase 4 (Istio traffic control, security, and observability) and the bonus chaos round are next.
+![Unified end-to-end trace across all three services](./screenshots/phase4-unified-trace.png)
+
+Full evidence and reasoning for all four phases: [REPORT.md](./REPORT.md).
+
+The bonus chaos round is next.
 
 ## Architecture
 
