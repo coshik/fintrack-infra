@@ -3,7 +3,7 @@
 **Author:** Kaushik Shettigar
 **Assignment:** Kubernetes & Docker Black Box Challenge — Assignment #2
 
-Screenshots for Phases 1–3 live in [`/screenshots`](./screenshots) and are embedded inline below. Save yours under these exact filenames and the embeds will render on GitHub. Phase 4 and the bonus round don't have screenshots embedded yet — those sections will get the same treatment once completed.
+Screenshots for Phases 1–4 live in [`/screenshots`](./screenshots) and are embedded inline below. Save yours under these exact filenames and the embeds will render on GitHub. The bonus round doesn't have screenshots embedded yet.
 
 ## Screenshot Index (Phase 1)
 
@@ -49,6 +49,17 @@ Screenshots for Phases 1–3 live in [`/screenshots`](./screenshots) and are emb
 | `screenshots/phase3-canary-labels.png` | `kubectl get pods --show-labels` — `version=v1`/`version=v2` correctly set for Istio subset routing |
 | `screenshots/phase3-quota-active.png` | `kubectl describe resourcequota` — active and correctly sized for Istio sidecar overhead |
 | `screenshots/phase3-rolling-update.png` | `kubectl get pods -w` — rolling update after applying the corrected manifest, old pods terminating as new ones come up |
+
+## Screenshot Index (Phase 4)
+
+| Filename | What it shows |
+|---|---|
+| `screenshots/phase4-mtls-canary-describe.png` | `istioctl x describe pod` — `Workload mTLS mode: STRICT`, DestinationRule/VirtualService correctly matched, 90% weight to v1 |
+| `screenshots/phase4-canary-distribution.png` | 50-request distribution test — 47 v1 / 3 v2, matching the 90/10 target |
+| `screenshots/phase4-circuit-breaker-tripped.png` | 5 real `500`s followed by `503`s once Envoy ejects the pod |
+| `screenshots/phase4-circuit-breaker-recovered.png` | `200`s again after `baseEjectionTime`, confirming the ejection is temporary |
+| `screenshots/phase4-jaeger-services.png` | Jaeger service dropdown showing `frontend`, `account-service`, `payment-service` as real traced services |
+| `screenshots/phase4-unified-trace.png` | Full end-to-end trace — `Services 3`, `Depth 4`, `Total Spans 6` — showing where latency concentrates |
 
 ---
 
@@ -317,7 +328,69 @@ Deleted a running `account-service-v1` pod directly (`kubectl delete pod`) and c
 
 ## Phase 4 — Istio Traffic Control, Security, and Observability
 
-*Status: not yet started.*
+### mTLS
+
+Applied a namespace-wide `PeerAuthentication` with `mtls.mode: STRICT`. Verified directly rather than assuming it took effect:
+
+```bash
+istioctl x describe pod $(kubectl get pod -l app=account-service,version=v1 -n fintrack -o jsonpath='{.items[0].metadata.name}') -n fintrack
+```
+
+![mTLS and canary routing confirmed together](./screenshots/phase4-mtls-canary-describe.png)
+
+Output showed `Workload mTLS mode: STRICT` under "Effective PeerAuthentication" — confirming enforcement, not just that the resource was created.
+
+**Real consequence discovered:** STRICT mode also rejects any *non-mesh* client connecting directly to a pod — including a raw `curl` hitting the `frontend` NodePort from outside the cluster (`Connection was reset`). This isn't a bug; it's the intended behavior of STRICT mTLS. It meant the "hit the service from outside" testing approach used earlier in the project no longer worked once mTLS was enabled, and traffic generation for later tests (canary, circuit breaker, tracing) had to originate from *inside* the mesh (pod-to-pod) instead.
+
+### Canary Routing (90/10 split)
+
+Created a `DestinationRule` defining `v1`/`v2` subsets (matching the `version` labels already set on the Deployments back in Phase 3) and a `VirtualService` routing 90% of traffic to `v1`, 10% to `v2`, with `retries: {attempts: 2, perTryTimeout: 1s}` and `timeout: 3s`.
+
+**Verification:** sent 50 requests to `account-service` from inside the mesh and counted which version answered:
+```python
+c = collections.Counter()
+for _ in range(50):
+    c[requests.get('http://account-service:5000/').json()['version']] += 1
+```
+
+![Canary distribution: 47 v1 / 3 v2](./screenshots/phase4-canary-distribution.png)
+
+`47 v1 / 3 v2` — matching the 90/10 target within expected statistical variance for 50 samples.
+
+**Port-naming fix along the way:** `istioctl analyze` flagged all three Services with `IST0118` — unnamed ports don't follow Istio's naming convention, which can lead to unreliable protocol auto-detection (relevant later for tracing accuracy). Fixed by adding `name: http` to every Service's port definition; `istioctl analyze` came back clean afterward.
+
+### Circuit Breaker (payment-service)
+
+Configured a `DestinationRule` with `outlierDetection: {consecutive5xxErrors: 5, interval: 1m, baseEjectionTime: 1m}`.
+
+**First test showed no ejection at all** despite `FAIL_RATE=1.0` producing real `500`s on every request. Root cause: Envoy's outlier detection has a default `maxEjectionPercent` of 10% — with only 1 replica of `payment-service`, ejecting it would remove 100% of the pool, which exceeds that 10% cap, so Envoy refuses to eject the sole host rather than take the entire service down. Fixed by explicitly setting `maxEjectionPercent: 100`, appropriate for a single-replica service.
+
+![Circuit breaker tripped: 500s then 503s](./screenshots/phase4-circuit-breaker-tripped.png)
+
+Retested: 5 real `500`s (matching `consecutive5xxErrors: 5`), then Envoy stopped forwarding to the pod entirely and returned `503` locally for every subsequent request.
+
+**Recovery confirmed temporary**, not permanent, per `baseEjectionTime`:
+
+![Circuit breaker recovered after baseEjectionTime](./screenshots/phase4-circuit-breaker-recovered.png)
+
+### Distributed Tracing
+
+Jaeger was found not actually running in the cluster (lost at some point during earlier EC2 restarts/cleanups) — reinstalled via the standard Istio addon manifest.
+
+**First tracing attempt showed zero real traces** — only Jaeger's own self-monitoring spans (`jaeger-all-in-one`). Diagnosed and fixed through several distinct causes in sequence:
+1. Istio 1.22 does not auto-wire tracing from the `demo` profile alone; the `zipkin` extension provider and `enableTracing` had to be configured explicitly via an `IstioOperator` overlay, plus a `Telemetry` resource setting `randomSamplingPercentage: 100`.
+2. Even after that, requests showed as two *separate* 2-span traces (`frontend→account-service`, `frontend→payment-service`) instead of one unified trace. Root cause: the Flask app never forwarded incoming trace headers (`x-b3-*`) onto its own outbound requests, so each downstream call started a fresh trace rather than continuing the parent one. Fixed by extracting and forwarding the B3 headers in `frontend/app.py`.
+3. That fix appeared to have no effect on retest — because the updated image had been pushed to Docker Hub under the same `:v1` tag, but the node's `imagePullPolicy` (default `IfNotPresent`) meant `kubectl rollout restart` kept reusing the stale cached image rather than pulling the new one. Fixed by setting `imagePullPolicy: Always`.
+4. Even with the fix genuinely running, traces still split — because the traffic used to test it (`kubectl exec ... requests.get('http://localhost:5000/')`) hit the app directly on its loopback address, bypassing its own Envoy sidecar entirely; with no sidecar involved, no trace headers were ever generated for the app to forward in the first place. Fixed by sending test traffic from a *different* pod to `frontend`'s Service name, so the request genuinely passed through Envoy on both ends.
+5. A related dead end: attempting to test via the external NodePort instead failed with `Connection was reset` — because STRICT mTLS (see above) correctly rejects non-mesh clients, so external NodePort testing isn't viable once mTLS is enabled; testing had to move to mesh-internal pod-to-pod calls instead.
+
+![Jaeger showing all three real services](./screenshots/phase4-jaeger-services.png)
+
+![Unified end-to-end trace](./screenshots/phase4-unified-trace.png)
+
+**Result:** a genuine unified trace — `Services 3`, `Depth 4`, `Total Spans 6` — showing `frontend → account-service` and `frontend → payment-service` as siblings under one parent.
+
+**Where is latency introduced?** In the trace waterfall, `frontend` itself accounts for ~27ms of the ~30ms total trace duration, while `account-service` and `payment-service` each contribute only ~2.5ms (their own server-side processing under 2ms each). The bottleneck is not either downstream service — it's `frontend`'s own handling time. Given the app code calls `account-service` and `payment-service` **sequentially** (one `requests.get`/`requests.post` after the other) despite neither call depending on the other's result, the most direct optimization would be making these two calls concurrently (e.g., a thread pool or async HTTP client) rather than back-to-back, which should reduce `frontend`'s own contribution to roughly the duration of the slower of the two calls instead of their sum.
 
 ## Bonus — Final Chaos Injection
 
@@ -337,3 +410,6 @@ Deleted a running `account-service-v1` pod directly (`kubectl delete pod`) and c
 | MongoDB storage | Install `local-path-provisioner` | Manually create PVs | Standard, minimal-effort choice for kubeadm/bare-metal clusters with no cloud storage API to hook into |
 | account-service-v2 memory | Raise limit + liveness probe | Fix the leak in code | Infrastructure-layer mitigation matches the assignment's Phase 3 scope; the code-level leak is intentionally part of the scenario and noted as the real underlying fix a team would also pursue |
 | ResourceQuota sizing | 16 CPU / 8Gi, based on measured sidecar overhead | Leave at an arbitrary round number | First attempt (4 CPU / 4Gi) was immediately exceeded by Istio sidecar overhead alone; sizing from real `kubectl describe resourcequota` usage avoids repeating that mistake |
+| Circuit breaker ejection cap | `maxEjectionPercent: 100` | Leave the 10% default | Default silently prevents ejection entirely when a service has only 1 replica; explicit override needed for the breaker to function as specified |
+| Tracing test traffic | Pod-to-pod calls using Service DNS names | `kubectl exec` to `localhost`, or external `curl` via NodePort | Both alternatives bypass the mesh (skip the sidecar or get rejected by STRICT mTLS respectively); only genuine in-mesh, service-to-service calls produce real, connected traces |
+| Frontend's sequential downstream calls | Documented as the identified latency bottleneck, not yet changed | Immediately rewrite to run concurrently | Root cause and recommendation captured for the report; implementing was left explicit as future work rather than silently expanding Phase 4's scope |
