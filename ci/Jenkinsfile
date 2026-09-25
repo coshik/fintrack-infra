@@ -10,6 +10,7 @@ pipeline {
   post {
     unsuccessful {
       node('built-in') {
+        checkout scm
         sh '''
           LAST_GOOD_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
           echo "Rolling back to $LAST_GOOD_TAG..."
