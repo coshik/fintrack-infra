@@ -17,4 +17,4 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
       - name: Analyze Istio configs
-        run: istioctl analyze -n fintrack
+        run: istioctl analyze -n fintrack --insecure-skip-tls-verify
