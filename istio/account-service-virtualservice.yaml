@@ -13,3 +13,4 @@ spec:
       weight: 10
     retries: { attempts: 2, perTryTimeout: 1s }
     timeout: 3s
+# verified by istioctl analyze in CI
