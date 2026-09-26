@@ -1,0 +1,20 @@
+name: Istio Config Analyze
+on:
+  pull_request:
+    branches: [main]
+    paths: ['istio/**']
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install istioctl
+        run: |
+          curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.22.0 sh -
+          echo "$PWD/istio-1.22.0/bin" >> $GITHUB_PATH
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+      - name: Analyze Istio configs
+        run: istioctl analyze -n fintrack
