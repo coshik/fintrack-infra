@@ -17,3 +17,4 @@ spec:
 # retest with TLS fix 2
 # retrigger
 # retrigger again
+# trigger analyze with final TLS fix
