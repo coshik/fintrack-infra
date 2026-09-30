@@ -16,6 +16,8 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
-          kubectl config set-cluster kubernetes --insecure-skip-tls-verify=true --kubeconfig=~/.kube/config
+          sed -i '/certificate-authority-data:/d' ~/.kube/config
+          sed -i '/    server:/a\    insecure-skip-tls-verify: true' ~/.kube/config
+          grep -A4 "clusters:" ~/.kube/config  
       - name: Analyze Istio configs
         run: istioctl analyze -n fintrack
