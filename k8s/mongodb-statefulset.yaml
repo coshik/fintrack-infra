@@ -27,6 +27,17 @@ spec:
         volumeMounts:
         - name: mongo-data
           mountPath: /data/db
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [mongodb]
+              topologyKey: kubernetes.io/hostname
   volumeClaimTemplates:
   - metadata: { name: mongo-data }
     spec:
