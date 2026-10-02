@@ -394,7 +394,63 @@ Jaeger was found not actually running in the cluster (lost at some point during 
 
 ## Bonus — Final Chaos Injection
 
-*Status: not yet started.*
+All three scenarios were actually simulated against the live system, not just discussed theoretically — each produced real, sometimes unexpected, evidence.
+
+### Scenario 1: Jenkins Agent Crashes Mid-Deploy
+
+**Simulation:** added a 30-second `sleep` to the pipeline's Build stage, triggered a build, and ran `docker kill jenkins-agent` partway through its execution to simulate the agent dying mid-deploy.
+
+**What actually happened (first attempt):** Jenkins did not fail immediately. The console showed `"docker-agent seems to be removed or offline... will wait for 5 min 0 sec for it to come back online"` — a real grace period, not instant failure. After the full 5 minutes elapsed with no reconnect, Jenkins terminated the running shell step, skipped the remaining stages, and finished `ABORTED`.
+
+**Root cause discovered:** the pipeline's `post { failure { ... } }` rollback block **never ran at all**. Jenkins' declarative `failure` post-condition only triggers on result `FAILURE` — not `ABORTED`. This means the rollback logic built in Phase 2 had a real, undetected gap: an agent crashing mid-deploy was a scenario it silently did not handle.
+
+**Second problem, found while fixing the first:** even after switching to the `unsuccessful` post-condition (which does catch `ABORTED`), the rollback steps were still declared to run on `agent { label 'docker-agent' }` — the same agent that had just died, with nowhere left to execute the rollback.
+
+**Fix:** combined fix — `post { unsuccessful { node('built-in') { ... } } }`, decoupling rollback execution from the potentially-dead deploy agent.
+
+**Third problem, found while verifying the fix:** re-ran the exact same test; rollback now executed on the built-in node, but printed `LAST_GOOD_TAG=none` instead of the real tag. Root cause: the built-in node has its own separate workspace from `docker-agent`'s, and only the agent's workspace had ever run `checkout scm` — the built-in node was running `git describe` in a directory with no git repository in it at all.
+
+**Final fix:** added an explicit `checkout scm` inside the `node('built-in')` block. Re-verified end-to-end: `LAST_GOOD_TAG=v2025.06.1` resolved correctly, rollback notification fired, build finished `ABORTED` with full rollback evidence in the console log.
+
+**Answering the assignment's questions directly:**
+- *What should happen?* Ideally, detection and rollback should be fast — a 5-minute default wait before Jenkins even considers the agent gone is a long window to sit in an unknown deploy state.
+- *How will rollback know?* As originally built, it wouldn't have — this required finding and fixing three separate, real bugs (wrong post-condition, wrong agent, wrong workspace) before rollback genuinely worked under this failure mode.
+- *How to improve the pipeline further?* Reduce Jenkins' agent-reconnect timeout from the 5-minute default for faster failure detection, and add a lightweight external health check (outside Jenkins entirely) that doesn't share fate with the same infrastructure that might be failing.
+
+### Scenario 2: Developer Accidentally Commits a Secret Again
+
+**Simulation:** `git push --no-verify` to deliberately bypass the local pre-push hook, pushing a file containing a fake secret.
+
+**First attempt — a real false negative worth documenting:** used `AKIAIOSFODNN7EXAMPLE` (the same AWS-published example key used earlier in Phase 1 testing). The server-side `gitleaks` GitHub Action reported **"No leaks found."** Root cause: this exact value is in gitleaks' own default allowlist (`gitleaks/gitleaks#1340`, "Add example AWS access keys to allowlist") as a known-safe documentation placeholder — gitleaks was behaving correctly, not failing, but it revealed that local and CI gitleaks runs can legitimately disagree on specific known values.
+
+**Second attempt — with a genuinely random, non-public-example secret value:** the server-side check correctly caught it (`Finding: AWS_SECRET_ACCESS_KEY`, `leaks found: 1`, job failed red), confirming the CI layer works as an independent backstop once a non-allowlisted pattern is used.
+
+**"Trust-but-verify" design, concretely demonstrated, not just described:**
+- **Local pre-push hook** = fast, convenient, developer-facing — but trivially bypassable by design (`--no-verify` exists for legitimate reasons too, like emergency hotfixes), so it cannot be the only safeguard.
+- **Server-side CI check on every PR** = the actual enforcement layer, since branch protection means a PR cannot be merged without it passing, regardless of whether the author bypassed anything locally.
+- **Known limitation surfaced by this exercise:** the two layers can use different gitleaks versions/configs (confirmed by the allowlist discrepancy above) — a real system would pin both to the same version/ruleset to avoid the local hook and CI check disagreeing in either direction.
+
+### Scenario 3: Istio Rollout Pushes 100% Traffic to Buggy v2
+
+**Simulation:** applied a second, conflicting `VirtualService` (`account-service-hotfix`) defining `weight: 100` to `v2`, alongside the existing correct 90/10 `VirtualService` — simulating a "hotfix" PR that silently introduces a routing conflict instead of touching the original config.
+
+**What actually happened — more nuanced and more dangerous than a clean failure:** `istioctl analyze` correctly flagged this immediately as `Error [IST0109]`: two VirtualServices defining the same host leads to undefined behavior. But a live traffic test (30 requests) showed **26 v1 / 4 v2** — close to the original, intended distribution, not a 100% skew to v2. The conflict was real and flagged, but did not manifest as an obviously broken traffic pattern at the moment it was tested.
+
+**This is the actual lesson, not a side note:** "undefined behavior" from a config conflict doesn't reliably look broken to a manual spot-check. A canary that "looks right" during a live traffic sample can still be sitting on genuinely undefined, conflict-resolved routing that could flip to a different outcome (100% to the buggy version) after any Envoy config reload, proxy restart, or Istio version change — with zero additional changes to either VirtualService. This directly explains the assignment's framing: "canary config looked right" because a point-in-time traffic check didn't reveal the underlying problem, not because the configuration was actually safe.
+
+**"Fail open and save the system" — implemented, not just proposed:** added `istioctl analyze` as an automated PR check (`.github/workflows/istio-analyze.yml`, triggered on any change under `istio/**`), so this exact class of bug is caught automatically before a conflicting VirtualService can ever reach the live cluster, rather than relying on someone noticing a traffic anomaly after the fact.
+
+**Getting this CI check actually working surfaced a real infrastructure/security boundary, worth documenting as its own finding:**
+1. GitHub's hosted runners cannot reach the cluster's **private VPC IP** — confirmed by `dial tcp 172.31.4.123:6443: i/o timeout`.
+2. The fix required exposing the Kubernetes API server (port 6443) to the public internet — a deliberate, acknowledged security tradeoff given this account had already experienced a real AWS security incident earlier in the project. Decided to proceed anyway, prioritizing CI automation for the assignment's scope, with the tradeoff explicitly recorded here rather than made silently.
+3. Once reachable, a **TLS certificate SAN mismatch** appeared: the API server's cert was only valid for `10.96.0.1`/the original private IP (baked in at `kubeadm init` time), not the public IP now being used to reach it.
+4. Attempting to bypass this with `--insecure-skip-tls-verify` as an `istioctl` flag failed — no such flag exists; this setting belongs in the kubeconfig file itself.
+5. A first kubeconfig edit (via `sed`) used incorrect YAML indentation, breaking the file's structure entirely (`yaml: line 6: mapping values are not allowed in this context`).
+6. A `kubectl config set-cluster --insecure-skip-tls-verify=true` alternative appeared to apply without error but the *next* run still showed the original TLS failure — later traced to a straightforward human cause (an unpushed local `main` that hadn't been `git pull`ed, so the "fix" being tested wasn't actually the one live on GitHub).
+7. With correct indentation finally confirmed via an added debug `grep` step in the workflow log, a **new, precise error** appeared: `specifying a root certificates file with the insecure flag is not allowed` — revealing that `certificate-authority-data` and `insecure-skip-tls-verify: true` cannot coexist in a kubeconfig at all; Kubernetes' client library rejects the combination outright rather than preferring one.
+8. **Final fix:** strip the `certificate-authority-data` line entirely via `sed`, then set `insecure-skip-tls-verify: true` — resolved the check for good.
+
+This entire debugging chain — eight distinct, real causes found in sequence across networking, security policy, TLS/PKI, and YAML correctness — is itself good evidence of how much genuine troubleshooting sits underneath a single line like "just skip TLS verification," and was left documented in full rather than condensed, since the sequence of wrong-then-right attempts is as instructive as the final fix.
 
 ---
 

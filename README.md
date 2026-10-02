@@ -37,7 +37,9 @@ Infrastructure runs on two AWS EC2 instances (Ubuntu, `t3.medium`) forming a `ku
 
 Full evidence and reasoning for all four phases: [REPORT.md](./REPORT.md).
 
-The bonus chaos round is next.
+**The bonus chaos round (all 3 scenarios) is complete.** Each was actually simulated against the live system rather than discussed theoretically. Killing the Jenkins agent mid-deploy surfaced three real, separate bugs in the rollback logic (wrong post-condition, wrong agent, wrong workspace) before rollback genuinely worked under that failure mode. Bypassing the pre-push hook revealed a real gitleaks allowlist false-negative on a well-known example key, then confirmed the server-side CI check independently catches a genuine secret. Simulating a conflicting Istio VirtualService showed that "undefined behavior" from a routing conflict doesn't reliably look broken on a live spot-check — `istioctl analyze` caught it immediately even though actual traffic still looked mostly normal — which led to adding `analyze` as an automated PR check, surfacing a real chain of infrastructure/security tradeoffs (private VPC networking, a deliberate public API-server exposure decision, TLS certificate SANs, and kubeconfig syntax) along the way.
+
+All four phases and the bonus round are now complete — see REPORT.md for full evidence and reasoning throughout.
 
 ## Architecture
 
