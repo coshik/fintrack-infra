@@ -13,6 +13,10 @@ spec:
       weight: 10
     retries: { attempts: 2, perTryTimeout: 1s }
     timeout: 3s
+    fault:
+      abort:
+        percentage: { value: 100 }
+        httpStatus: 503
 # verified by istioctl analyze in CI
 # retest with TLS fix 2
 # retrigger
