@@ -3,9 +3,24 @@ pipeline {
   options { timeout(time: 10, unit: 'MINUTES') }
   stages {
     stage('Checkout') { steps { checkout scm } }
-    stage('Build') { steps { sh 'echo "Building account-service:v2..."; sleep 30' } }
+    stage('Build') { steps { sh 'echo "Building account-service:v2..."' } }
     stage('Deploy Canary') { steps { sh 'echo "Deploying account-service:v2 canary..."' } }
-    stage('Health Check') { steps { sh 'echo "Simulating failed health check..."; exit 1' } }
+    stage('Check Istio 5xx Rate') {
+      steps {
+        script {
+          def result = sh(script: '''
+            curl -s -G 'http://172.31.4.123:31823/api/v1/query' \
+              --data-urlencode 'query=sum(rate(istio_requests_total{destination_service=~"account-service.*",response_code=~"5.."}[1m]))' \
+              | grep -oP '"value":\\[[0-9.]+,"\\K[0-9.]+' || echo "0"
+          ''', returnStdout: true).trim()
+          if (result == "") { result = "0" }
+          echo "account-service 5xx rate (per sec, 1m window): ${result}"
+          if (result.toFloat() > 0) {
+            error("Istio reports real 5xx errors on account-service (rate=${result}/sec) - triggering rollback")
+          }
+        }
+      }
+    }
   }
   post {
     unsuccessful {
@@ -20,3 +35,4 @@ pipeline {
     }
   }
 }
+
