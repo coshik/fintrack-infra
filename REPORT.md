@@ -3,7 +3,7 @@
 **Author:** Kaushik Shettigar
 **Assignment:** Kubernetes & Docker Black Box Challenge — Assignment #2
 
-Screenshots for Phases 1–4 live in [`/screenshots`](./screenshots) and are embedded inline below. Save yours under these exact filenames and the embeds will render on GitHub. The bonus round doesn't have screenshots embedded yet.
+Screenshots live in [`/screenshots`](./screenshots) and are embedded inline below. Each phase, and the final gap review, has an index table listing the filenames it expects — save yours under those exact names and the embeds will render on GitHub.
 
 ## Screenshot Index (Phase 1)
 
@@ -60,6 +60,18 @@ Screenshots for Phases 1–4 live in [`/screenshots`](./screenshots) and are emb
 | `screenshots/phase4-circuit-breaker-recovered.png` | `200`s again after `baseEjectionTime`, confirming the ejection is temporary |
 | `screenshots/phase4-jaeger-services.png` | Jaeger service dropdown showing `frontend`, `account-service`, `payment-service` as real traced services |
 | `screenshots/phase4-unified-trace.png` | Full end-to-end trace — `Services 3`, `Depth 4`, `Total Spans 6` — showing where latency concentrates |
+
+## Screenshot Index (Final Gap Review)
+
+| Filename | What it shows |
+|---|---|
+| `screenshots/gapreview-fault-injection-503.png` | 5/5 requests to `account-service` failing with HTTP 503 while the Istio abort fault is active |
+| `screenshots/gapreview-fault-recovered-200.png` | 5/5 requests returning 200 after the fault block was removed |
+| `screenshots/gapreview-jenkins-5xx-pass.png` | Jenkins console: measured 5xx rate `0`, build `SUCCESS` |
+| `screenshots/gapreview-jenkins-5xx-rollback.png` | Jenkins console: measured rate `0.8889`/s, stage fails, rollback runs on the built-in node, build `FAILURE` |
+| `screenshots/gapreview-quota-surge-event.png` | `FailedCreate` event: `exceeded quota ... requested limits.memory=1152Mi, used 7Gi, limited 8Gi` |
+| `screenshots/gapreview-cpu-throttling-200m.png` | frontend `cpu.stat` before/after one benchmark run at the 200m limit (`nr_throttled` 12 → 41) |
+| `screenshots/gapreview-cpu-throttling-1000m.png` | frontend `cpu.stat` at the 1000m limit (`nr_throttled` stays 0) |
 
 ---
 
@@ -224,7 +236,7 @@ The pipeline's `post { failure { ... } }` block hardcoded a rollback target of `
 
 ![Rollback fixed](./screenshots/phase2-rollback-fixed-console.png)
 
-**Deferred:** the assignment also asks for a *conditional* rollback triggered by Istio-reported 5xx rates rather than a hardcoded pipeline stage failure. This depends on Istio traffic policies and metrics that don't exist yet (Phase 4) — noted here as a sequencing dependency, not a skipped requirement, and will be added once Phase 4 is complete.
+**Completed after Phase 4:** the assignment also asks for a *conditional* rollback triggered by Istio-reported 5xx rates rather than a hardcoded stage failure. This depended on Istio metrics that did not exist until Phase 4, so it was initially deferred, then implemented and tested during the final gap review (see **Final Gap Review → Section 1**), including its limitations.
 
 ### Timeout and Failure Notifications
 
@@ -322,7 +334,7 @@ Applied a per-namespace `ResourceQuota` — but the first version (`limits.cpu: 
 
 ### Fault Injection and Recovery Verification
 
-Deleted a running `account-service-v1` pod directly (`kubectl delete pod`) and confirmed Kubernetes' built-in self-healing replaced it automatically via the Deployment's ReplicaSet, without any manual intervention — the same self-healing mechanism the liveness probe (Root Cause 1) also relies on.
+Deleted a running `account-service-v1` pod directly (`kubectl delete pod`) and confirmed Kubernetes' built-in self-healing replaced it automatically via the Deployment's ReplicaSet, without any manual intervention — the same self-healing mechanism the liveness probe (Root Cause 1) also relies on. An Istio-level fault-injection test (an `abort` fault on `account-service`'s VirtualService, then removal and recovery) and the MongoDB anti-affinity follow-up were added in the **Final Gap Review** below.
 
 ---
 
@@ -390,7 +402,7 @@ Jaeger was found not actually running in the cluster (lost at some point during 
 
 **Result:** a genuine unified trace — `Services 3`, `Depth 4`, `Total Spans 6` — showing `frontend → account-service` and `frontend → payment-service` as siblings under one parent.
 
-**Where is latency introduced?** In the trace waterfall, `frontend` itself accounts for ~27ms of the ~30ms total trace duration, while `account-service` and `payment-service` each contribute only ~2.5ms (their own server-side processing under 2ms each). The bottleneck is not either downstream service — it's `frontend`'s own handling time. Given the app code calls `account-service` and `payment-service` **sequentially** (one `requests.get`/`requests.post` after the other) despite neither call depending on the other's result, the most direct optimization would be making these two calls concurrently (e.g., a thread pool or async HTTP client) rather than back-to-back, which should reduce `frontend`'s own contribution to roughly the duration of the slower of the two calls instead of their sum.
+**Where is latency introduced?** In the first trace captured, `frontend`'s own span accounted for ~27ms of the ~30ms total, while `account-service` and `payment-service` each contributed only ~2.5ms (under 2ms of server-side processing each), so neither downstream service is the bottleneck. That trace was later found to be a cold request — neighboring traces were 12–14ms — and the initial recommendation (run the two sequential downstream calls concurrently) turned out to be wrong when it was actually measured: the two calls total only ~5ms, and parallelizing them produced no improvement. The optimization that worked, found by measuring instead of guessing, was removing CPU throttling on the `frontend` container. Full investigation, numbers, and caveats: see **Final Gap Review → Phase 4: optimizing the latency path** below.
 
 ## Bonus — Final Chaos Injection
 
@@ -454,6 +466,152 @@ This entire debugging chain — eight distinct, real causes found in sequence ac
 
 ---
 
+## Final Gap Review — Closing Remaining Requirements
+
+After the bonus round, the work was cross-checked against the assignment's task list line by line. Four requirements had been left partly done or only documented. This section records closing each one, including what did not work, plus the sizing lessons and one open question that came up along the way.
+
+| Requirement | Status | Where |
+|---|---|---|
+| Phase 2: conditional rollback on 5xx detection from Istio | Done; decision logic tested end to end, rollback *action* is still a placeholder | Section 1 |
+| Phase 3: check pod anti-affinity on the MongoDB StatefulSet | Done (soft rule); no observable effect with one replica | Section 2 |
+| Phase 3: fault injection and recovery | Done at the Istio level (previously only a pod deletion) | Section 3 |
+| Phase 4: optimize the traced path | Done, but not by the change originally proposed | Section 4 |
+
+### 1. Phase 2: Conditional Rollback on 5xx Detection from Istio
+
+**What was missing:** Phase 2 deferred this until Istio existed, and it was never revisited once Phase 4 was finished.
+
+**What was built:** the pipeline's artificial Health Check stage (an `exit 1` that failed every build on purpose) was replaced with a stage that queries Prometheus for `account-service`'s 5xx rate:
+
+```
+sum(rate(istio_requests_total{destination_service=~"account-service.*",response_code=~"5.."}[1m]))
+```
+
+If the rate is above zero the stage fails the build, which runs the existing `unsuccessful` post block (rollback on the built-in node).
+
+**Connectivity:** the Jenkins agent is a plain Docker container on the EC2 host, outside the cluster network, so it cannot resolve in-cluster DNS names like `prometheus.istio-system`. The Prometheus Service was patched to `NodePort` (31823) and reached over the control-plane's **private** IP (`172.31.4.123`), which, unlike the public IP, does not change on restart. Two things had to be repaired first:
+- Prometheus itself was missing (lost in the earlier restart incidents, like Jaeger before it) and was reinstalled from the Istio addons manifest.
+- The `jenkins-agent` container was still stopped from the bonus agent-crash test (`Exited (137)`) and was restarted.
+
+The agent image has `curl` but neither `wget` nor `python3`, so the stage extracts the value from Prometheus's JSON response with `grep`.
+
+**Results:**
+
+| Condition | Measured 5xx rate | Build result | Rollback |
+|---|---|---|---|
+| No faults active | 0 | `SUCCESS` | not triggered |
+| Istio abort fault (100% HTTP 503) on `account-service`, 20 requests sent | 0.8889 req/s | `FAILURE` | triggered on the built-in node, resolved `v2025.06.1` |
+
+![Jenkins build passing with a measured 5xx rate of 0](./screenshots/gapreview-jenkins-5xx-pass.png)
+
+![Jenkins build failing on a real 5xx rate and rolling back](./screenshots/gapreview-jenkins-5xx-rollback.png)
+
+**Limitations, stated plainly:**
+- **The rollback action is still a placeholder.** The post block resolves the last good tag and prints a notification; it does not run `kubectl rollout undo` or redeploy anything. The Build and Deploy Canary stages are likewise `echo` placeholders. The decision logic is real and tested; the remediation is not wired to the cluster.
+- **The threshold is crude.** Any nonzero rate fails the stage, with no minimum request volume or error ratio, and the query covers all `account-service` traffic rather than only the v2 canary subset. A production version would filter on the canary subset and use an error ratio.
+- **Prometheus is now exposed on a NodePort.** Because this instance's security group allows all inbound traffic (a convenience decision made earlier), that port is reachable from the internet. Acceptable for a short-lived assignment environment; not otherwise.
+
+### 2. Phase 3: MongoDB Pod Anti-Affinity
+
+A `podAntiAffinity` rule (preferred, weight 100, `topologyKey: kubernetes.io/hostname`, matching `app: mongodb`) was added to the StatefulSet. It is deliberately the soft `preferredDuringSchedulingIgnoredDuringExecution` form: with a single worker node, a hard `required` rule would make any second replica unschedulable. With one replica on one worker, the rule has nothing to act on, so it is correct configuration but not observable behavior in this cluster.
+
+**Side discovery:** to exercise the change, `mongodb-0` was deleted, and it failed to come back:
+
+```
+FailedCreate ... failed quota: fintrack-quota: must specify limits.cpu for: mongodb; limits.memory for: mongodb; requests.cpu for: mongodb; requests.memory for: mongodb
+```
+
+MongoDB was the third workload, after `payment-service` and `frontend`, to be missing a `resources:` block. It had only kept running because it had never been recreated since the quota was added. Adding requests (`128Mi` / `100m`) and limits (`256Mi` / `300m`) fixed it, and `mongodb-0` returned to `2/2 Running` within seconds.
+
+### 3. Phase 3: Istio Fault Injection and Recovery
+
+The original Phase 3 fault test only deleted a pod and watched Kubernetes replace it. The assignment's "fault injection" is more naturally Istio's own feature, so an `abort` fault was added to the `account-service` VirtualService:
+
+```yaml
+    fault:
+      abort:
+        percentage: { value: 100 }
+        httpStatus: 503
+```
+
+Five requests from the `payment-service` pod to `account-service` all failed with HTTP 503. After the fault block was removed and re-applied, all five returned 200.
+
+![Requests failing with 503 under the abort fault](./screenshots/gapreview-fault-injection-503.png)
+
+![Requests recovering to 200 after the fault was removed](./screenshots/gapreview-fault-recovered-200.png)
+
+**Process notes worth keeping:**
+- The clean file was copied to `/tmp` before editing. `/tmp` does not survive a reboot, and the instance was restarted several times, so the revert re-created the file from its known contents instead of restoring a backup.
+- One revert attempt used a branch name that already existed locally. `git checkout -b` failed, the commit landed on the local `main`, and `git push origin <name>` pushed the *old existing branch*, not the new commit, so GitHub showed "nothing to compare". The PR diff, which still showed the fault block being removed, confirmed it. **`git push origin <name>` pushes the local branch of that name, not `HEAD`.**
+- The fault was reused for the Section 1 test and removed again; the live VirtualService was confirmed clean afterwards (`kubectl get virtualservice account-service -n fintrack -o yaml | grep -A5 fault` returned nothing).
+
+### 4. Phase 4: Optimizing the Latency Path
+
+**Starting point:** in the first trace captured, `frontend`'s own span dominated (~27ms of ~30ms) while each downstream call took ~2.5ms. That trace was a cold request; other traces were 12–14ms, so the two sequential downstream calls account for at most ~5ms.
+
+**Method:** Jaeger traces are too noisy for a before/after comparison, so requests were timed directly: from the `payment-service` pod to the `frontend` Service, 5 warm-up requests then 100 timed requests, two runs per variant. The sequential variant had to be rebuilt under its own tag (`:sequential`) because `:v1` had been overwritten by the parallel version.
+
+**Attempt 1: parallelize the two downstream calls** (a `ThreadPoolExecutor`; the trace headers are read before the work is submitted, because Flask's `request` object is not available in worker threads).
+
+| Variant | Median | Average | Max |
+|---|---|---|---|
+| Sequential, run 1 | 14.26 ms | 24.86 ms | 60.70 ms |
+| Sequential, run 2 | 14.23 ms | 24.51 ms | 68.32 ms |
+| Parallel, run 1 | 15.94 ms | 32.37 ms | 85.65 ms |
+| Parallel, run 2 | 14.70 ms | 32.84 ms | 136.35 ms |
+
+No improvement, and a slightly worse average and maximum. **The hypothesis was rejected.**
+
+**Attempt 2: check for CPU throttling.** The `frontend` container's cgroup counters were read before and after one 100-request benchmark run at its 200m CPU limit:
+
+| Counter | Before | After | Change |
+|---|---|---|---|
+| `nr_periods` | 149 | 192 | +43 |
+| `nr_throttled` | 12 | 41 | **+29 (about 67% of periods)** |
+| `throttled_usec` | 631,897 | 2,405,409 | about 1.77 s |
+
+The `istio-proxy` container showed zero throttling in both snapshots. The `frontend` CPU limit was raised from 200m to 1000m. On the replacement pod, `nr_throttled` stayed at **0** across a full benchmark run (periods 22 → 42).
+
+![frontend CPU throttling at the 200m limit](./screenshots/gapreview-cpu-throttling-200m.png)
+
+![frontend CPU throttling at the 1000m limit: none](./screenshots/gapreview-cpu-throttling-1000m.png)
+
+| State | Median | Average | Max |
+|---|---|---|---|
+| 200m limit (both variants) | ~14 ms | 24.5 – 32.8 ms | 61 – 136 ms |
+| 1000m limit, run 1 | 13.99 ms | 14.58 ms | 37.45 ms |
+| 1000m limit, run 2 | 13.97 ms | 14.28 ms | 38.95 ms |
+
+The median did not move; the average fell by roughly 40–55% and the worst case by about 3×, and the average now sits next to the median. The long tail was the throttling.
+
+**Caveats:**
+- The frontend running during the CPU change was the *parallel* version. The sequential version was not re-measured at the 1000m limit, and no throttle counters were captured for it, so whether the extra threads made the throttling worse is a hypothesis, not a finding.
+- The ~14 ms median floor is not explained. Candidates not tested: a new connection per downstream call (no `requests.Session`), Flask's development server instead of a production WSGI server, and mesh overhead.
+- The parallel code remains merged and deployed; its benefit is unproven.
+- The change costs 800m of extra `limits.cpu` quota (13.3 → 14.1 of 20).
+
+### 5. ResourceQuota: Three Separate Sizing Failures
+
+1. **Sidecar overhead (Phase 3):** the first quota (4 CPU / 4Gi) was exceeded by Istio sidecars alone.
+2. **Missing `resources:` blocks:** once a namespace has a quota on limits and requests, every pod must declare them. `payment-service`, `frontend`, and finally MongoDB each surfaced only when that pod was next recreated.
+3. **Rolling-update surge:** a `frontend` rollout stalled at "0 out of 1 new replicas have been updated" with:
+
+   ```
+   exceeded quota: fintrack-quota, requested: limits.memory=1152Mi, used: limits.memory=7Gi, limited: limits.memory=8Gi
+   ```
+
+   A rolling update briefly runs one extra pod, and 7Gi + 1152Mi exceeds 8Gi. The quota was raised to **20 CPU / 12Gi**; afterwards usage was 14.1 of 20 CPU and 7 of 12Gi in limits, and 950m of 2 CPU and 1216Mi of 2Gi in requests.
+
+![Quota rejection during the frontend rollout](./screenshots/gapreview-quota-surge-event.png)
+
+**Lesson:** size a quota for the *peak during a rollout* (steady state plus one surge pod), and when retrofitting a quota, give every workload explicit `resources:` up front instead of discovering them one restart at a time. The requests budget is now the tighter of the two.
+
+### 6. Open Question: The Unexplained 502s
+
+During the first baseline attempt for Section 4, requests to `frontend` returned HTTP 502 (in two separate sessions), before the new image was deployed. `frontend` returns 502 when either downstream call raises an error. The first suspicion was a leftover abort fault from Section 3; the live VirtualService had no `fault` block, so that was ruled out. At the time, a rollout was also stuck on the quota problem, so the old pod was serving. Once the rollout completed, the same request returned 200 and the benchmarks ran clean. No `frontend` logs were captured during the failure, so the cause is **undetermined**.
+
+---
+
 ## Summary of Alternatives Considered
 
 | Decision | Chosen | Alternative | Why |
@@ -465,7 +623,9 @@ This entire debugging chain — eight distinct, real causes found in sequence ac
 | Local dev cluster | AWS EC2 + `kubeadm` | `kind`/`minikube` | Chosen deliberately for closer-to-production cluster administration experience, at the cost of ~$30/month and more manual setup |
 | MongoDB storage | Install `local-path-provisioner` | Manually create PVs | Standard, minimal-effort choice for kubeadm/bare-metal clusters with no cloud storage API to hook into |
 | account-service-v2 memory | Raise limit + liveness probe | Fix the leak in code | Infrastructure-layer mitigation matches the assignment's Phase 3 scope; the code-level leak is intentionally part of the scenario and noted as the real underlying fix a team would also pursue |
-| ResourceQuota sizing | 16 CPU / 8Gi, based on measured sidecar overhead | Leave at an arbitrary round number | First attempt (4 CPU / 4Gi) was immediately exceeded by Istio sidecar overhead alone; sizing from real `kubectl describe resourcequota` usage avoids repeating that mistake |
+| ResourceQuota sizing | 20 CPU / 12Gi limits, sized for steady state plus one rolling-update surge pod | 16 CPU / 8Gi (steady state only), or an arbitrary round number | Three separate sizing failures: 4 CPU / 4Gi was exceeded by sidecar overhead alone; 16 CPU / 8Gi left no headroom for a surge pod (7Gi used + 1152Mi requested > 8Gi), which stalled a `frontend` rollout |
 | Circuit breaker ejection cap | `maxEjectionPercent: 100` | Leave the 10% default | Default silently prevents ejection entirely when a service has only 1 replica; explicit override needed for the breaker to function as specified |
 | Tracing test traffic | Pod-to-pod calls using Service DNS names | `kubectl exec` to `localhost`, or external `curl` via NodePort | Both alternatives bypass the mesh (skip the sidecar or get rejected by STRICT mTLS respectively); only genuine in-mesh, service-to-service calls produce real, connected traces |
-| Frontend's sequential downstream calls | Documented as the identified latency bottleneck, not yet changed | Immediately rewrite to run concurrently | Root cause and recommendation captured for the report; implementing was left explicit as future work rather than silently expanding Phase 4's scope |
+| Frontend latency optimization | Raise the `frontend` CPU limit 200m → 1000m (throttled in ~67% of CPU periods) | Parallelize the two downstream calls | Parallelizing was implemented and measured first: no improvement (slightly worse average and max). Throttling counters pointed at the real cause; afterwards throttling dropped to 0 and average latency fell from ~25–33ms to ~14ms |
+| MongoDB pod anti-affinity | `preferredDuringScheduling...` (soft) | `requiredDuringScheduling...` (hard) | With a single worker node a hard rule would make any second replica unschedulable; the soft rule is correct but has nothing to act on with one replica |
+| Rollback trigger signal | Prometheus 5xx rate for `account-service` (any rate above 0 fails the stage) | Hardcoded `exit 1` health check | The decision is now driven by real mesh telemetry; the threshold is deliberately crude (no minimum volume, not limited to the v2 canary subset) and is listed as a limitation |
